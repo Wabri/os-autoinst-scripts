@@ -138,6 +138,9 @@ max-complexity = 9
 # Enable reformatting of code snippets in docstrings.
 docstring-code-format = true
 
+[tool.ty.analysis]
+allowed-unresolved-imports = ["netsnmp"]
+
 [tool.ruff.lint.flake8-copyright]
 author = "SUSE LLC"
 notice-rgx = "Copyright"

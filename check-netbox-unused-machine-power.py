@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 import netsnmp
 import pynetbox
+from pynetbox.models import dcim
 
 BACHMANN_RELAY_ON = 19  # Bachmann PDU relay status value for "on"
 
@@ -73,14 +74,14 @@ def green(s: str) -> str:
     return f"\x1b[32m{s}\x1b[0m"
 
 
-def print_device(device: pynetbox.models.dcim.Devices, dev_pdu_power: dict, watts: int) -> None:
+def print_device(device: dcim.Devices, dev_pdu_power: dict, watts: int) -> None:
     """Report device power consumption per PDU outlet for human review."""
     s = "  " if verbose else ""
-    dev_pdu_power = " ".join([f"{h}:{green(p) if s else red(p)}={w}W" for (h, p), (w, s) in dev_pdu_power.items()])
-    print(f"{s}{device.name} status={device.status.value} {dev_pdu_power} ∑{watts}W")
+    pdu_power = " ".join([f"{h}:{green(p) if s else red(p)}={w}W" for (h, p), (w, s) in dev_pdu_power.items()])
+    print(f"{s}{device.name} status={device.status.value} {pdu_power} ∑{watts}W")
 
 
-def print_no_connection(device: pynetbox.models.dcim.Devices) -> None:
+def print_no_connection(device: dcim.Devices) -> None:
     """Warn that power consumption for this device cannot be verified."""
     if verbose:
         print(f"No connection for {device.name} ({device.display_url})", file=sys.stderr)
