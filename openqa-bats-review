@@ -27,6 +27,7 @@ from urllib3.util.retry import Retry
 PASSED = "label:force_result:passed:" + pathlib.Path(__file__).name
 TIMEOUT = 30
 USER_AGENT = "openqa-bats-review (https://github.com/os-autoinst/os-autoinst-scripts)"
+MIN_JOBS_FOR_COMPARISON = 2
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(sys.argv[0] if __name__ == "__main__" else __name__)
@@ -227,7 +228,7 @@ def main(url: str, dry_run: bool = False) -> None:  # noqa: C901, FBT001, FBT002
         failed = process_logs(logs)
         all_failures.append(failed)
 
-    if len(all_failures) < 2:  # noqa: PLR2004
+    if len(all_failures) < MIN_JOBS_FOR_COMPARISON:
         if not all_failures:
             log.info("No logs found in chain. Exiting")
         else:
