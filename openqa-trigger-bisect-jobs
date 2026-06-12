@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright SUSE LLC
-# ruff: noqa: ANN001, ANN201, B005, PLW1510, PYI063, S113, S324, S404, S603, TRY401, FBT002, SIM112
+# ruff: noqa: ANN001, ANN201, B005, PYI063, S113, S324, S404, S603, TRY401, FBT002, SIM112
 """Trigger openQA tests bisecting maintenance updates.
 
 Determine which pending operating system maintenance update, called "incident",
@@ -131,7 +131,7 @@ client_args = [
 def call(cmds, dry_run=False):
     """Call a command and return stdout."""
     log.debug("call: %s", cmds)
-    res = subprocess.run((["echo", "Simulating: "] if dry_run else []) + cmds, capture_output=True)
+    res = subprocess.run((["echo", "Simulating: "] if dry_run else []) + cmds, capture_output=True, check=False)
     if len(res.stderr):
         log.warning("call() %s stderr: %s", cmds[0], res.stderr)
     res.check_returncode()
