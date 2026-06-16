@@ -104,7 +104,7 @@ openQA can be configured to automatically trigger investigation jobs whenever
 there is no carry-over and no automatic ticket assignment by auto-review.
 
 * [openqa-monitor-investigation-candidates](https://github.com/os-autoinst/os-autoinst-scripts/blob/master/openqa-monitor-investigation-candidates)
-  queries the dabase of an openQA instance (ssh access is necessary) and
+  queries the database of an openQA instance (ssh access is necessary) and
   output the list of failed jobs that are suitable for triggering
   investigation jobs on, compare to "openqa-monitor-incompletes"
 
