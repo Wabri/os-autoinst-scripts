@@ -27,6 +27,7 @@ from urllib3.util.retry import Retry
 PASSED = "label:force_result:passed:" + pathlib.Path(__file__).name
 TIMEOUT = 30
 USER_AGENT = "openqa-bats-review (https://github.com/os-autoinst/os-autoinst-scripts)"
+MIN_JOBS_FOR_COMPARISON = 2
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(sys.argv[0] if __name__ == "__main__" else __name__)
@@ -151,21 +152,8 @@ def resolve_clone_chain(openqa_host: str, job_id: int) -> list[int]:
     return chain
 
 
-def main(url: str, dry_run: bool = False) -> None:  # noqa: C901, FBT001, FBT002, PLR0912, PLR0915
-    """Execute main function."""
-    if not url.startswith(("http://", "https://")):
-        url = f"https://{url}"
-    urlx = urlparse(url)
-    openqa_host = f"{urlx.scheme}://{urlx.netloc}"
-    my_job_id = int(pathlib.Path(urlx.path).name)
-
-    chain = resolve_clone_chain(openqa_host, my_job_id)
-    if len(chain) <= 1:
-        log.info("No clones. Exiting")
-        sys.exit(0)
-    log.info("Processing clone chain: %s", " -> ".join(map(str, chain)))
-
-    # Expected number of logs per testsuite
+def get_expected_logs(distri: str, version: str) -> dict[str, int]:
+    """Get the expected number of logs per testsuite."""
     expected = {
         "aardvark_testsuite": 1,
         "buildah_testsuite": 2,
@@ -181,11 +169,8 @@ def main(url: str, dry_run: bool = False) -> None:  # noqa: C901, FBT001, FBT002
         "skopeo_testsuite": 2,
         "umoci_testsuite": 2,
     }
-
-    job_id = chain[0]
-    job = get_job(f"{openqa_host}/api/v1/jobs/{job_id}/details")
     # We have more tests on Tumbleweed
-    if job["settings"]["DISTRI"] == "opensuse":
+    if distri == "opensuse":
         # For buildah we also run conformance tests
         expected["buildah_testsuite"] += 1
         # For conmon we also test crun as root & rootless
@@ -195,8 +180,28 @@ def main(url: str, dry_run: bool = False) -> None:  # noqa: C901, FBT001, FBT002
         expected["docker_testsuite"] += 5
         # For skopeo we also run Golang integration tests
         expected["skopeo_testsuite"] += 1
-    elif job["settings"]["DISTRI"] == "sle" and job["settings"]["VERSION"].startswith("16."):
+    elif distri == "sle" and version.startswith("16."):
         expected["docker_testsuite"] += 5
+    return expected
+
+
+def main(url: str, dry_run: bool = False) -> None:  # noqa: C901, FBT001, FBT002
+    """Execute main function."""
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+    urlx = urlparse(url)
+    openqa_host = f"{urlx.scheme}://{urlx.netloc}"
+    my_job_id = int(pathlib.Path(urlx.path).name)
+
+    chain = resolve_clone_chain(openqa_host, my_job_id)
+    if len(chain) <= 1:
+        log.info("No clones. Exiting")
+        sys.exit(0)
+    log.info("Processing clone chain: %s", " -> ".join(map(str, chain)))
+
+    job_id = chain[0]
+    job = get_job(f"{openqa_host}/api/v1/jobs/{job_id}/details")
+    expected = get_expected_logs(job["settings"]["DISTRI"], job["settings"].get("VERSION", ""))
 
     all_failures = []
 
@@ -227,7 +232,7 @@ def main(url: str, dry_run: bool = False) -> None:  # noqa: C901, FBT001, FBT002
         failed = process_logs(logs)
         all_failures.append(failed)
 
-    if len(all_failures) < 2:  # noqa: PLR2004
+    if len(all_failures) < MIN_JOBS_FOR_COMPARISON:
         if not all_failures:
             log.info("No logs found in chain. Exiting")
         else:

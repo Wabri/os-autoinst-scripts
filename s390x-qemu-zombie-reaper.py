@@ -44,32 +44,32 @@ def run_cmd(cmd: str, *, check: bool = True, verbose: bool = False) -> str:
 
 def get_running_jobs(hypervisor_host: str, *, verbose: bool = False) -> list[int]:
     """Fetch job IDs currently assigned to workers using this hypervisor."""
-    try:  # noqa: PLW0717
-        # Extract the short name (e.g., s390zl12) from the FQDN
-        short_name = hypervisor_host.split(".", maxsplit=1)[0]
+    # Extract the short name (e.g., s390zl12) from the FQDN
+    short_name = hypervisor_host.split(".", maxsplit=1)[0]
 
-        output = run_cmd("openqa-cli api --osd -X GET workers", verbose=verbose)
-        if not output:
-            return []
+    output = run_cmd("openqa-cli api --osd -X GET workers", verbose=verbose)
+    if not output:
+        return []
 
+    try:
         data: dict[str, Any] = json.loads(output)
         workers_data = data.get("workers", [])
-        jobs_to_restart = []
-
-        for worker in workers_data:
-            properties = worker.get("properties", {})
-            worker_class = properties.get("WORKER_CLASS", "")
-
-            # Match if the hypervisor short name is in the WORKER_CLASS
-            if short_name in worker_class:
-                job_id = worker.get("jobid")
-                if job_id:
-                    jobs_to_restart.append(job_id)
-
-        return list(set(jobs_to_restart))
-    except (json.JSONDecodeError, KeyError, TypeError) as e:
+    except json.JSONDecodeError as e:
         print(f"Failed to fetch running jobs for {hypervisor_host}: {e}")
         return []
+
+    jobs_to_restart = []
+    for worker in workers_data:
+        properties = worker.get("properties", {})
+        worker_class = properties.get("WORKER_CLASS", "")
+
+        # Match if the hypervisor short name is in the WORKER_CLASS
+        if short_name in worker_class:
+            job_id = worker.get("jobid")
+            if job_id:
+                jobs_to_restart.append(job_id)
+
+    return list(set(jobs_to_restart))
 
 
 def trigger_actions(host: str, jobs: list[int], *, dry_run: bool, verbose: bool) -> None:
