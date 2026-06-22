@@ -163,7 +163,7 @@ def comment_on_failed_jobs(
     host_val: str,
 ) -> None:
     if not comment_on_obs or not obs_package_name:
-        raise typer.Exit(code=1)
+        return
 
     log.info("Posting comment with failed jobs to OBS")
     delete_old_comments(osc_cmd_str, obs_component, obs_package_name)
@@ -175,7 +175,6 @@ def comment_on_failed_jobs(
     comment_text += f"groupid={openqa_groupid_val}"
 
     post_comment(osc_cmd_str, obs_component, obs_package_name, comment_text)
-    raise typer.Exit(code=1)
 
 
 def monitor_single_job(
@@ -223,9 +222,9 @@ app = typer.Typer(add_completion=False)
 Monitor an openQA job by polling the status of a job over the API.
 
 Continuously polls the openQA API for the status of the specified jobs until
-all jobs finish. After the jobs have finished this program exits with an exit
-code corresponding to the jobs' result. For example all jobs pass it would
-exit this program with exit code 0 for success; otherwise with 1.
+all jobs finish. If any jobs have failed, it writes the file
+"job_post_skip_submission" with the IDs of the failed jobs. After the jobs have
+finished this program exits with a 0 return code.
 """
 )
 def main(
@@ -297,6 +296,12 @@ def main(
         openqa_groupid_val=openqa_groupid_val,
         host_val=host_val,
     )
+
+    # let os-autoinst-obs-auto-submit skip the submission
+    pathlib.Path("job_post_skip_submission").write_text(json.dumps({"failed_jobs": failed_jobs}), encoding="utf8")
+
+    # consider the monitoring itself succesful; notifications about the failing jobs are provided via job done hooks
+    raise typer.Exit(code=0)
 
 
 if __name__ == "__main__":  # pragma: no cover
