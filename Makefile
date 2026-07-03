@@ -25,6 +25,9 @@ help: ## Show this help
 
 default: help
 
+# Override to use uv, e.g. PYTHON_RUN="uv run"
+PYTHON_RUN ?=
+
 .PHONY: test
 ifeq ($(CHECKSTYLE),0)
 checkstyle_tests =
@@ -39,7 +42,7 @@ test-bash: $(BPAN) ## Run bash tests
 	"${PROVE}" -r $(if $v,-v )$(test)
 
 test-python: ## Run python tests
-	py.test tests
+	$(PYTHON_RUN) py.test tests
 
 test-online: ## Run tests that require online connection
 	dry_run=1 bash -x ./openqa-label-known-issues-multi < ./tests/incompletes
@@ -65,7 +68,7 @@ test-yaml: ## Run YAML syntax checks
 checkstyle-python: check-ruff check-conventions check-ty ## Run python style checks
 check-ruff: ## Run python style checks with ruff
 	@which ruff >/dev/null 2>&1 || echo "Command 'ruff' not found, can not execute python style checks"
-	@if [ -n "$(PY_FILES)" ]; then ruff format --check $(PY_FILES) && ruff check $(PY_FILES); fi
+	@if [ -n "$(PY_FILES)" ]; then $(PYTHON_RUN) ruff format --check $(PY_FILES) && $(PYTHON_RUN) ruff check $(PY_FILES); fi
 
 check-conventions: ## Check project conventions
 	@if git grep -nE '^\s*@(unittest\.mock\.|mock\.)?patch' tests/; then \
@@ -76,7 +79,7 @@ check-conventions: ## Check project conventions
 
 .PHONY: check-ty
 check-ty: ## Run ty type checker
-	ty check
+	$(PYTHON_RUN) ty check
 
 check-code-health: ## Run code health checks (vulture)
 	@echo "Checking code health…"
@@ -91,8 +94,8 @@ test-gitlint: ## Run commit message checks using gitlint
 
 .PHONY: tidy
 tidy: ## Format code and fix linting issues
-	ruff format $(PY_FILES)
-	ruff check --fix $(PY_FILES)
+	$(PYTHON_RUN) ruff format $(PY_FILES)
+	$(PYTHON_RUN) ruff check --fix $(PY_FILES)
 
 update-deps: ## Update dependencies package spec and cpanfile
 	tools/update-deps --cpanfile cpanfile --specfile dist/rpm/os-autoinst-scripts-deps.spec
