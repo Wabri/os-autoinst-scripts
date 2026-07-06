@@ -48,7 +48,7 @@ class Incident:
 
     @property
     def incident_id(self) -> str:
-        """Return the incident ID."""
+        """The incident ID."""
         if self._incident_id:
             return self._incident_id
 
