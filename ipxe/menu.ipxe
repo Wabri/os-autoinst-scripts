@@ -19,7 +19,8 @@ item --gap --             -------------------------------- x86_64 --------------
 item --key l leapS1       (L)Boot openSUSE Leap15.6 from download.opensuse.org / ttyS1 (http)
 item --key e leapS2       (E)Boot openSUSE Leap15.6 from download.opensuse.org / ttyS2 (http)
 item --key a leapS1auto   (A)Boot openSUSE Leap15.6 / ttyS1 autoyast=https://is.gd/oqaay4
-item --key k tumbleweed_KVM_autoyast (K)Boot openSUSE Tumbleweed KVM server from O3 repo with autoyast/ ttyS1 (http)
+item --key g tumbleweed_KVM_agama (G)Boot openSUSE Tumbleweed KVM server from O3 repo with Agama/ ttyS1 (http)
+item --key y tumbleweed_KVM_autoyast (Y)Boot openSUSE Tumbleweed KVM server from O3 repo with autoyast/ ttyS1 (http)
 item --key z tumbleweed_XEN_autoyast (Z)Boot openSUSE Tumbleweed XEN server from O3 repo with autoyast/ ttyS1 (http)
 item --key t tumbleweedS1 (T)Boot openSUSE Tumbleweed from download.opensuse.org / ttyS1 (http)
 item --key s tumbleweedS2 (S)Boot openSUSE Tumbleweed from download.opensuse.org / ttyS2 (http)
@@ -55,6 +56,12 @@ goto editandboot
 set kernel http://download.opensuse.org/distribution/leap/15.6/repo/oss/boot/x86_64/loader/linux
 set cmdline network=1 install=http://download.opensuse.org/distribution/leap/15.6/repo/oss/ root=/dev/ram0 initrd=initrd textmode=1 console=tty console=ttyS1,115200 autoyast=https://is.gd/oqaay4 rootpassword=opensuse
 set initrd http://download.opensuse.org/distribution/leap/15.6/repo/oss/boot/x86_64/loader/initrd
+goto editandboot
+
+:tumbleweed_KVM_agama
+set kernel http://openqa.opensuse.org/assets/repo/openSUSE-Tumbleweed-oss-x86_64-CURRENT/boot/x86_64/loader/linux
+set initrd http://openqa.opensuse.org/assets/repo/openSUSE-Tumbleweed-oss-x86_64-CURRENT/boot/x86_64/loader/initrd
+set cmdline plymouth.enable=0 console=tty console=ttyS1,115200 reboot_timeout=0 kernel.softlockup_panic=1 vga=791 video=1024x768 vt.color=0x07 quiet inst.install_url=http://openqa.opensuse.org/assets/repo/openSUSE-Tumbleweed-oss-x86_64-CURRENT live.password=nots3cr3t inst.auto=http://openqa.opensuse.org/assets/other/tw_virt_host.jsonnet inst.finish=stop
 goto editandboot
 
 :tumbleweed_KVM_autoyast
