@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright SUSE LLC
-# ruff: noqa: BLE001, C901, D103, D401, E501, FBT001, FBT003, PLR0911, PLR0912, PLR0913, PLR0914, PLR0915, PLR0917, PLR2004, PLW0717, S110, S404, S603, SIM105, SIM112, T201, TRY300, PERF203, PERF401
+# ruff: noqa: BLE001, C901, D103, D401, E501, FBT001, FBT003, PLR0911, PLR0912, PLR0913, PLR0914, PLR0915, PLR0917, PLR2004, S110, S404, S603, SIM105, SIM112, T201, TRY300, PERF203, PERF401
 """Takes an openQA job URL, looks for matching "known issues" and labels/restarts."""
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from typing import Annotated, Any
 
 import httpx
@@ -69,22 +70,13 @@ def get_markdown_html(plain_text: str) -> str:
 
 def multipart_from_markdown(plain: str, to_email: str, from_email: str, subject: str) -> str:
     md = get_markdown_html(plain)
-    boundary = "_000_DB6PR0401MB2565_"
-    header = f'Content-Type: multipart/alternative; boundary="{boundary}"'
-
-    body = (
-        f"--{boundary}\n"
-        'Content-Type: text/plain; charset="utf-8"\n'
-        "Content-Transfer-Encoding: quoted-printable\n\n"
-        f"{plain}\n\n"
-        f"--{boundary}\n"
-        'Content-Type: text/html; charset="utf-8"\n'
-        "Content-Transfer-Encoding: quoted-printable\n\n"
-        f"<html><body>\n{md}</body></html>\n\n"
-        f"--{boundary}--"
-    )
-
-    return f"To: {to_email}\nFrom: {from_email}\nSubject: {subject}\n{header}\n\n{body}\n"
+    msg = EmailMessage()
+    msg["To"] = to_email
+    msg["From"] = from_email
+    msg["Subject"] = subject
+    msg.set_content(plain, charset="utf-8")
+    msg.add_alternative(f"<html><body>\n{md}</body></html>", subtype="html", charset="utf-8")
+    return msg.as_string()
 
 
 def send_email(mailto: str, email_content: str, dry_run: bool) -> None:
