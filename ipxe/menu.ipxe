@@ -19,9 +19,8 @@ item --gap --             -------------------------------- x86_64 --------------
 item --key l leapS1       (L)Boot openSUSE Leap15.6 from download.opensuse.org / ttyS1 (http)
 item --key e leapS2       (E)Boot openSUSE Leap15.6 from download.opensuse.org / ttyS2 (http)
 item --key a leapS1auto   (A)Boot openSUSE Leap15.6 / ttyS1 autoyast=https://is.gd/oqaay4
-item --key g tumbleweed_KVM_agama (G)Boot openSUSE Tumbleweed KVM server from O3 repo with Agama/ ttyS1 (http)
+item --key g tumbleweed_KVM_agama    (G)Boot openSUSE Tumbleweed KVM server from O3 repo with Agama/ ttyS1 (http)
 item --key y tumbleweed_KVM_autoyast (Y)Boot openSUSE Tumbleweed KVM server from O3 repo with autoyast/ ttyS1 (http)
-item --key z tumbleweed_XEN_autoyast (Z)Boot openSUSE Tumbleweed XEN server from O3 repo with autoyast/ ttyS1 (http)
 item --key t tumbleweedS1 (T)Boot openSUSE Tumbleweed from download.opensuse.org / ttyS1 (http)
 item --key s tumbleweedS2 (S)Boot openSUSE Tumbleweed from download.opensuse.org / ttyS2 (http)
 item --key M memtest64efi (M)Memtest 64 EFI
@@ -67,12 +66,6 @@ goto editandboot
 :tumbleweed_KVM_autoyast
 set kernel http://openqa.opensuse.org/assets/repo/openSUSE-Tumbleweed-oss-x86_64-CURRENT/boot/x86_64/loader/linux
 set cmdline install=http://openqa.opensuse.org/assets/repo/openSUSE-Tumbleweed-oss-x86_64-CURRENT textmode=1 plymouth.enable=0 Y2DEBUG=1 console=tty console=ttyS1,115200 linuxrc.log=/dev/ttyS1 linuxrc.core=/dev/ttyS1 linuxrc.debug=4,trace reboot_timeout=0  kernel.softlockup_panic=1 vga=791 video=1024x768 vt.color=0x07 quiet autoyast=http://openqa.opensuse.org/assets/other/autoyast_opensuse_kvm_sshd.xml
-set initrd http://openqa.opensuse.org/assets/repo/openSUSE-Tumbleweed-oss-x86_64-CURRENT/boot/x86_64/loader/initrd
-goto editandboot
-
-:tumbleweed_XEN_autoyast
-set kernel http://openqa.opensuse.org/assets/repo/openSUSE-Tumbleweed-oss-x86_64-CURRENT/boot/x86_64/loader/linux
-set cmdline install=http://openqa.opensuse.org/assets/repo/openSUSE-Tumbleweed-oss-x86_64-CURRENT textmode=1 plymouth.enable=0 Y2DEBUG=1 console=tty console=ttyS1,115200 linuxrc.log=/dev/ttyS1 linuxrc.core=/dev/ttyS1 linuxrc.debug=4,trace reboot_timeout=0  kernel.softlockup_panic=1 vga=791 video=1024x768 vt.color=0x07 quiet autoyast=http://openqa.opensuse.org/assets/other/autoyast_opensuse_xen_sshd.xml
 set initrd http://openqa.opensuse.org/assets/repo/openSUSE-Tumbleweed-oss-x86_64-CURRENT/boot/x86_64/loader/initrd
 goto editandboot
 
