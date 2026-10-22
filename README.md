@@ -168,6 +168,8 @@ following scripts are provided:
 
 It passes the optional openQA variable `LLM_PROMPT_EXTENSION` (per test suite or job group) to the LLM.
 
+If `SMELT_GRAPHQL_URL` is set to a SMELT GraphQL endpoint, the submissions from the job's `*_TEST_ISSUES` settings and their packages are added to the prompt. If unset or unreachable, the section is omitted.
+
 To run it manually without posting a comment, with the dependencies from `pyproject.toml` installed:
 `LLM_API_URL=<url> LLM_MODEL=<model> LLM_API_TOKEN=<token> ./openqa-llm-investigate --dry https://openqa.opensuse.org/tests/123`
 

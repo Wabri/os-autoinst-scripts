@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, Mock, call
 
 import httpx
 import pytest
+import requests
 from typer.testing import CliRunner
 
 if TYPE_CHECKING:
@@ -1134,6 +1135,67 @@ def test_investigate_drops_placeholder_reasons_from_comment(mocker: MockerFixtur
 
     mock_print.assert_called_once_with("https://openqa.opensuse.org/tests/123")
     assert mock_post.call_args[0][2].endswith(f"BISECT: YES\nRestart: NO\n\n{llm_investigate.COMMENT_FOOTER}")
+
+
+def test_submission_section_omitted_without_submissions() -> None:
+    assert not llm_investigate._submission_section({})
+
+
+def test_submission_section_lists_submissions_and_packages() -> None:
+    section = llm_investigate._submission_section({44522: ["kubernetes1.18"], 44495: ["bar", "foo"], 7: []})
+    assert section == (
+        "Submissions under test (the job installs these changes):\n"
+        "- 7: (packages unknown)\n- 44495: bar, foo\n- 44522: kubernetes1.18\n"
+        "Treat failures related to these packages as a likely product regression.\n\n"
+    )
+
+
+def test_submissions_looked_up_from_job_settings(mocker: MockerFixture) -> None:
+    mock = mocker.patch("llm_investigate.submission_packages", return_value={5: ["a"]})
+    assert llm_investigate._submissions({"settings": {"OS_TEST_ISSUES": "5"}}) == {5: ["a"]}
+    mock.assert_called_once_with([5])
+
+
+def test_submissions_empty_when_smelt_fails(mocker: MockerFixture) -> None:
+    mocker.patch("llm_investigate.submission_packages", side_effect=requests.ConnectionError("down"))
+    assert llm_investigate._submissions({"settings": {"OS_TEST_ISSUES": "5"}}) == {}
+
+
+def test_investigate_prompt_lists_submissions(mocker: MockerFixture) -> None:
+    mocker.patch("llm_investigate.post_comment")
+    mocker.patch("llm_investigate.typer.echo")
+    mocker.patch("llm_investigate.analyze_job", return_value="the analysis")
+    mocker.patch("llm_investigate.submission_packages", return_value={5: ["foo"]})
+    client = setup_mock_client(
+        mocker,
+        {
+            "api/v1/jobs": {
+                "job": {
+                    "result": "failed",
+                    "testresults": [{"name": "isosize", "result": "failed"}],
+                    "settings": {"OS_TEST_ISSUES": "5"},
+                }
+            }
+        },
+    )
+
+    llm_investigate.investigate("123")
+
+    assert "Submissions under test" in _prompt_sent(client)
+    assert "- 5: foo\n" in _prompt_sent(client)
+
+
+def test_investigate_prompt_omits_submissions_without_test_issues(mocker: MockerFixture) -> None:
+    mocker.patch("llm_investigate.post_comment")
+    mocker.patch("llm_investigate.typer.echo")
+    mocker.patch("llm_investigate.analyze_job", return_value="the analysis")
+    mock = mocker.patch("llm_investigate.submission_packages", return_value={})
+    client = setup_mock_client(mocker)
+
+    llm_investigate.investigate("123")
+
+    assert "Submissions under test" not in _prompt_sent(client)
+    mock.assert_called_once_with([])
 
 
 def _prompt(extension: Any) -> str:
