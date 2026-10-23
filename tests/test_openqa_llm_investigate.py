@@ -17,7 +17,6 @@ from unittest.mock import MagicMock, Mock, call
 
 import httpx
 import pytest
-import requests
 from typer.testing import CliRunner
 
 if TYPE_CHECKING:
@@ -1152,13 +1151,17 @@ def test_submission_section_lists_submissions_and_packages() -> None:
 
 def test_submissions_looked_up_from_job_settings(mocker: MockerFixture) -> None:
     mock = mocker.patch("llm_investigate.submission_packages", return_value={5: ["a"]})
-    assert llm_investigate._submissions({"settings": {"OS_TEST_ISSUES": "5"}}) == {5: ["a"]}
-    mock.assert_called_once_with([5])
+    client = Mock()
+    assert llm_investigate._submissions(client, {"settings": {"OS_TEST_ISSUES": "5"}}) == {5: ["a"]}
+    mock.assert_called_once_with([5], client)
 
 
-def test_submissions_empty_when_smelt_fails(mocker: MockerFixture) -> None:
-    mocker.patch("llm_investigate.submission_packages", side_effect=requests.ConnectionError("down"))
-    assert llm_investigate._submissions({"settings": {"OS_TEST_ISSUES": "5"}}) == {}
+def test_submissions_empty_and_only_info_logged_when_smelt_fails(mocker: MockerFixture) -> None:
+    mocker.patch("llm_investigate.submission_packages", side_effect=httpx.ConnectError("down"))
+    log = mocker.patch("llm_investigate.log")
+    assert llm_investigate._submissions(Mock(), {"settings": {"OS_TEST_ISSUES": "5"}}) == {}
+    log.info.assert_called_once()
+    log.warning.assert_not_called()
 
 
 def test_investigate_prompt_lists_submissions(mocker: MockerFixture) -> None:
@@ -1195,7 +1198,7 @@ def test_investigate_prompt_omits_submissions_without_test_issues(mocker: Mocker
     llm_investigate.investigate("123")
 
     assert "Submissions under test" not in _prompt_sent(client)
-    mock.assert_called_once_with([])
+    mock.assert_called_once_with([], client)
 
 
 def _prompt(extension: Any) -> str:

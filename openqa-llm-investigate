@@ -21,7 +21,6 @@ from typing import Annotated, Any
 from urllib.parse import urlparse, urlunparse
 
 import httpx
-import requests
 import tenacity
 import typer
 
@@ -559,12 +558,12 @@ def _submission_section(submissions: dict[int, list[str]]) -> str:
     )
 
 
-def _submissions(job: dict[str, Any]) -> dict[int, list[str]]:
+def _submissions(client: httpx.Client, job: dict[str, Any]) -> dict[int, list[str]]:
     """Return the packages of the submissions tested by the job (empty if none or SMELT fails)."""
     try:
-        return submission_packages(submission_ids(job.get("settings", {})))
-    except requests.RequestException as e:
-        log.warning("Could not look up the submissions in SMELT: %s", e)
+        return submission_packages(submission_ids(job.get("settings", {})), client)
+    except (httpx.HTTPError, ValueError) as e:
+        log.info("Could not look up the submissions in SMELT: %s", e)
         return {}
 
 
@@ -616,7 +615,7 @@ def _gather_stats(
         "same_module_failures": same_module_failures,
         "consecutive_failures": consecutive_str,
         "investigation_info": _investigation_text(investigation.get("diff_to_last_good")),
-        "submission_info": _submissions(job),
+        "submission_info": _submissions(client, job),
     }, job_found
 
 
