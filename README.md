@@ -16,6 +16,9 @@ package under openSUSE. You need to add the
 [openQA development repository](https://open.qa/docs/#development-version-repository)
 for this.
 
+Some scripts import helper modules from `common/` or `openqa_llm_investigate/`,
+so run them from a full checkout instead of copying a single file.
+
 ### auto-review - Automatically detect known issues in openQA jobs, label openQA jobs with ticket references and optionally retrigger
 
 Based on simple regular expressions in the subject line of tickets on
@@ -168,6 +171,9 @@ following scripts are provided:
 
 It passes the optional openQA variable `LLM_PROMPT_EXTENSION` (per test suite or job group) to the LLM.
 
+If `SMELT_GRAPHQL_URL` is set to a SMELT GraphQL endpoint, the submissions from the job's `*_TEST_ISSUES` settings and their packages are added to the prompt. If unset or unreachable, the section is omitted.
+To check it by hand without calling the LLM: `SMELT_GRAPHQL_URL=<url> ./openqa-llm-investigate --print-prompt <job URL>`
+
 To run it manually without posting a comment, with the dependencies from `pyproject.toml` installed:
 `LLM_API_URL=<url> LLM_MODEL=<model> LLM_API_TOKEN=<token> ./openqa-llm-investigate --dry https://openqa.opensuse.org/tests/123`
 
@@ -176,6 +182,18 @@ Or with [uv](https://docs.astral.sh/uv/), which installs the dependencies for yo
 
 For Google Vertex AI, set `GOOGLE_APPLICATION_CREDENTIALS` and `GCLOUD_PROJECT` (optionally `VERTEX_LOCATION`, default `global`), then e.g.
 `LLM_API=vertex LLM_MODEL=claude-sonnet-5-5@default ./openqa-llm-investigate https://openqa.opensuse.org/tests/123`.
+
+### openqa-list-incidents
+
+`openqa-list-incidents` lists the submissions tested by an openQA job, with their packages and bug references from SMELT. With `-v` it shows ticket URLs and titles, which needs `BUGZILLA_TOKEN` and `JIRA_TOKEN`.
+
+`./openqa-list-incidents https://openqa.suse.de/tests/25077664`
+
+```
+S:M:46918:427970  aliyun-cli  bnc#1283596,bnc#1284203
+S:M:47213:428682  ansible-core  bnc#1284847
+S:M:46114:434772  bash,libxmlb,snowball  bnc#1268975,jsc#PED-16570
+```
 
 ### More details and examples about openqa-investigate comments
 

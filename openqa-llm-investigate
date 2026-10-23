@@ -25,6 +25,7 @@ import tenacity
 import typer
 
 from common.error_handling import is_404_str
+from common.smelt import submission_ids, submission_packages
 from openqa_llm_investigate.analysis import analyze_job
 from openqa_llm_investigate.http import AnalyzerError, NoFailedModulesError, OpenQA
 from openqa_llm_investigate.text import redact
@@ -50,7 +51,7 @@ Job details:
 - Flavor: {flavor}
 - Result: {result}{prompt_extension_text}
 
-{investigation_section}Failure analysis (context window of {context_lines} lines{truncated}):
+{submission_section}{investigation_section}Failure analysis (context window of {context_lines} lines{truncated}):
 {analysis}
 
 You will get a few short questions about this failure. Answer each exactly as asked and nothing else.
@@ -547,6 +548,25 @@ def _investigation_section(info: str) -> str:
     return f"Investigation info (diff to last good):\n{info.rstrip()}\n\n" if info.strip() else ""
 
 
+def _submission_section(submissions: dict[int, list[str]]) -> str:
+    if not submissions:
+        return ""
+    lines = "\n".join(f"- {i}: {', '.join(pkgs) or '(packages unknown)'}" for i, pkgs in sorted(submissions.items()))
+    return (
+        f"Submissions under test (the job installs these changes):\n{lines}\n"
+        "Treat failures related to these packages as a likely product regression.\n\n"
+    )
+
+
+def _submissions(client: httpx.Client, job: dict[str, Any]) -> dict[int, list[str]]:
+    """Return the packages of the submissions tested by the job (empty if none or SMELT fails)."""
+    try:
+        return submission_packages(submission_ids(job.get("settings", {})), client)
+    except (httpx.HTTPError, ValueError) as e:
+        log.info("Could not look up the submissions in SMELT: %s", e)
+        return {}
+
+
 def _build_prompt(job: dict[str, Any], analysis: str, stats: dict[str, Any], opts: Options) -> str:
     settings = job.get("settings", {})
     failed_modules = [m.get("name", "unknown") for m in job.get("testresults", []) if m.get("result") == "failed"]
@@ -568,6 +588,7 @@ def _build_prompt(job: dict[str, Any], analysis: str, stats: dict[str, Any], opt
         "context_lines": opts.context_lines,
         "analysis": analysis,
         "truncated": TRUNCATED_NOTE.format(log_lines=opts.log_lines) if truncated else "",
+        "submission_section": _submission_section(stats.get("submission_info", {})),
         "investigation_section": _investigation_section(stats["investigation_info"]),
         "prompt_extension_text": extension_text,
     }
@@ -594,6 +615,7 @@ def _gather_stats(
         "same_module_failures": same_module_failures,
         "consecutive_failures": consecutive_str,
         "investigation_info": _investigation_text(investigation.get("diff_to_last_good")),
+        "submission_info": _submissions(client, job),
     }, job_found
 
 

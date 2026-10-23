@@ -27,6 +27,8 @@ from urllib.parse import parse_qs, urlparse
 import requests
 from requests.exceptions import RequestException
 
+from common.smelt import submission_ids
+
 BUGZILLA_TOKEN = os.getenv("BUGZILLA_TOKEN")
 JIRA_TOKEN = os.getenv("JIRA_TOKEN")
 
@@ -275,10 +277,7 @@ def print_incidents(url: str, *, verbose: bool = False) -> None:
         job = got.json()["job"]
     except RequestException as error:
         sys.exit(f"ERROR: {url}: {error}")
-    settings = job["settings"]
-    ids = set()
-    for issue in [x for x in settings if "_TEST_ISSUES" in x]:
-        ids |= {int(x.strip()) for x in settings[issue].split(",")}
+    ids = set(submission_ids(job["settings"]))
     incidents = [i for i in get_all_incidents() if i["incident"]["incident_id"] in ids]
     incidents.sort(key=lambda i: str.casefold(i["packages"][0]))
     for incident in incidents:
