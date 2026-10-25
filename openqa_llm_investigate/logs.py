@@ -49,6 +49,36 @@ _KEY_RULES: list[tuple[re.Pattern[str], str]] = [
         (r"^KDUMP_OOPS: (\S+)", r"crash kernel oops in \1"),
     )
 ]
+# Verdicts that a stale or unrelated line can set too, like an AVC denial at boot: a failing step's verdict beats them.
+_GENERIC_VERDICTS = ("SELinux denial", "cloud-init error", "unexpected dialog")
+# Common output of any command, so they only read the steps that failed the module; `^\r?` allows `\n\r` line ends.
+_STEP_RULES: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(pattern, re.MULTILINE), template)
+    for pattern, template in (
+        # wait_serial turns CRLF into LF: only a prompt (sudo or sudo-rs) that ends a failing step went unanswered
+        (
+            r"(?:\[sudo\] password for [^:\r\n]{1,64}|\[sudo: authenticate\] Password):\s*\Z",
+            "command waited for a sudo password",
+        ),
+        (r"Could not resolve host(?:name:? | name |: )([\w.-]{1,253})", r"name resolution failed (\1)"),
+        (r"\blookup ([\w.-]{1,253})(?: on \S{1,100})?: no such host", r"name resolution failed (\1)"),
+        (r"Temporary failure in name resolution|Name or service not known", "name resolution failed"),
+        (
+            (
+                r"^\r?(mount\.nfs4?): (an incorrect mount option was specified|access denied by server while mounting"
+                r"|requested NFS version or transport protocol is not supported|Connection (?:timed out|refused))"
+            ),
+            r"mount failed (\1: \2)",
+        ),
+        (
+            (
+                r"^\r?mount: (?:\S{1,4096}: )?"
+                r"(wrong fs type, bad option, bad superblock|fsconfig system call failed[^\r\n]{0,100})"
+            ),
+            r"mount failed (\1)",
+        ),
+    )
+]
 _JOB_LOG_SIGNAL_RE = re.compile(r"\[(?:warn|error)\]|!!!|\bdied\b|Unable to|Failed to|No such file")
 _EXIT_TOKEN_RE = re.compile(r"echo (\S+?)-\$\?-")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -250,12 +280,27 @@ def dialog_signal(lines: list[str]) -> str | None:
     return f"DIALOG: {(title or lines[0].split(': ', 1)[-1])[:100]}"
 
 
-def summarize_key_error(text: str) -> str | None:
-    """Return a one-line verdict for the first matching signal rule (None if no rule matches)."""
+def _failing_step_verdict(texts: list[str]) -> str | None:
+    """Return a one-line verdict for the first `_STEP_RULES` rule matching one of the failing steps' texts."""
+    for rx, template in _STEP_RULES:
+        for text in texts:
+            if m := rx.search(text):
+                return m.expand(template)
+    return None
+
+
+def summarize_key_error(text: str, failing_steps: list[str] | None = None) -> str | None:
+    """Return a one-line verdict for the first matching signal rule (None if no rule matches).
+
+    A `_STEP_RULES` verdict for the texts of `failing_steps` beats the `_GENERIC_VERDICTS` rules, not the others.
+    """
+    step = _failing_step_verdict(failing_steps or [])
     for rx, template in _KEY_RULES:
+        if step and template.startswith(_GENERIC_VERDICTS):
+            continue
         if m := rx.search(text):
             return m.expand(template)
-    return None
+    return step
 
 
 def last_test_died(autoinst_log: str) -> tuple[str, int] | None:
