@@ -1351,6 +1351,90 @@ def test_superseded_ends_on_rows_whose_clones_loop() -> None:
     assert not llm_investigate._superseded(history[10], history, 20)
 
 
+PENDING_STATES = {"scheduled", "assigned", "setup", "running", "uploading"}
+
+
+def _build_jobs_client(jobs: list[dict[str, Any]]) -> MagicMock:
+    # Like openQA, scope=relevant keeps a job only if it has no clone or a pending one
+    states = {j["id"]: j["state"] for j in jobs}
+
+    def get(_url: str, params: dict[str, Any], **_kwargs: Any) -> Mock:
+        rows = [
+            j
+            for j in jobs
+            if j["result"] == params["result"]
+            and (
+                params.get("scope") != "relevant"
+                or j.get("clone_id") is None
+                or states[j["clone_id"]] in PENDING_STATES
+            )
+        ]
+        return Mock(json=Mock(return_value={"jobs": rows}))
+
+    client = MagicMock()
+    client.get.side_effect = get
+    return client
+
+
+def _failed_job(
+    job_id: int, test: str, clone_id: int | None = None, group_id: int | None = 1, machine: str = "uefi"
+) -> dict[str, Any]:
+    return {
+        "id": job_id,
+        "test": test,
+        "group_id": group_id,
+        "state": "done",
+        "result": "failed",
+        "clone_id": clone_id,
+        "settings": {"MACHINE": machine, "FLAVOR": "DVD", "ARCH": "x86_64"},
+        "modules": [{"name": "isosize", "result": "failed"}],
+    }
+
+
+def _count_build_failures(jobs: list[dict[str, Any]]) -> tuple[int, int]:
+    job = jobs[0] | {"testresults": jobs[0]["modules"]}
+    return llm_investigate._build_failures(_build_jobs_client(jobs), "http://example.com", str(job["id"]), job)
+
+
+def test_build_failures_counts_a_job_restarted_into_a_pending_clone() -> None:
+    pending = {"id": 130, "state": "scheduled", "result": "none"}
+    total, same = _count_build_failures([_failed_job(123, "t"), _failed_job(124, "u", clone_id=130), pending])
+    assert (total, same) == (2, 1)
+    assert llm_investigate._enforce_bisect_rule("BISECT: YES \u2014 isolated", same).startswith("BISECT: NO")
+
+
+def test_build_failures_counts_retried_failures_with_running_clones() -> None:
+    jobs = [_failed_job(i, f"t{i}", clone_id=i + 100) for i in range(1, 26)]
+    jobs += [{"id": i + 100, "state": "running", "result": "none"} for i in range(1, 26)]
+    assert _count_build_failures(jobs) == (25, 24)
+
+
+def test_build_failures_counts_only_the_finished_clone_of_a_restarted_job() -> None:
+    jobs = [_failed_job(123, "t"), _failed_job(124, "u", clone_id=130), _failed_job(130, "u")]
+    assert _count_build_failures(jobs) == (2, 1)
+
+
+def test_build_failures_counts_the_finished_retry_of_the_job_as_the_job() -> None:
+    jobs = [_failed_job(123, "t", clone_id=124), _failed_job(124, "t"), _failed_job(125, "t", machine="64bit")]
+    assert _count_build_failures(jobs) == (2, 1)
+
+
+def test_build_failures_does_not_count_an_incomplete_investigated_job() -> None:
+    jobs = [_failed_job(123, "t") | {"result": "incomplete"}, _failed_job(124, "u")]
+    assert _count_build_failures(jobs) == (1, 1)
+
+
+def test_build_failures_counts_the_failed_job_whose_retry_passed() -> None:
+    passed = {"id": 130, "state": "done", "result": "passed"}
+    jobs = [_failed_job(123, "t", clone_id=130), passed, _failed_job(124, "u")]
+    assert _count_build_failures(jobs) == (2, 1)
+
+
+def test_build_failures_leaves_out_a_group_less_clone_of_the_job() -> None:
+    jobs = [_failed_job(123, "t"), _failed_job(140, "t", group_id=None), _failed_job(125, "t", machine="64bit")]
+    assert _count_build_failures(jobs) == (2, 1)
+
+
 def test_investigate_job_not_found_in_history_appends_note_and_logs_info(mocker: MockerFixture) -> None:
     mock_log = mocker.patch("llm_investigate.log")
     mock_post = mocker.patch("llm_investigate.post_comment")

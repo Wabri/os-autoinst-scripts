@@ -304,6 +304,12 @@ def _shares_failed_modules(other_job: dict[str, Any], target_modules: set[str]) 
     return bool(target_modules.intersection(other_failed))
 
 
+def _scenario(job: dict[str, Any]) -> tuple[Any, ...]:
+    """Return the test, machine, flavor and arch of a job, which tell its scenario within a build."""
+    settings = job.get("settings", {})
+    return job.get("test"), settings.get("MACHINE"), settings.get("FLAVOR"), settings.get("ARCH")
+
+
 def _api_kind(opts: Options) -> LlmApi:
     """Resolve `auto`: Ollama's native chat endpoint ends in `/api/chat`, everything else is OpenAI style."""
     if opts.llm_api != LlmApi.AUTO:
@@ -541,13 +547,23 @@ def _consecutive_failures(
 
 
 def _build_failures(client: httpx.Client, base_url: str, job_id: str, job: dict[str, Any]) -> tuple[int, int]:
-    """Return the failed jobs of this build and those among them failing in the same module(s)."""
+    """Return the failed jobs of this build and the other ones failing in the same module(s).
+
+    A restarted job counts once, as openQA leaves out jobs whose clone is no longer pending (scope `relevant`), and
+    the investigated job's scenario counts once if the job or a run of its scenario failed.
+    """
     settings = job.get("settings", {})
-    params = {k.lower(): settings.get(k, "unknown") for k in ("BUILD", "DISTRI", "VERSION")} | {"result": "failed"}
+    params = {k.lower(): settings.get(k, "unknown") for k in ("BUILD", "DISTRI", "VERSION")} | {
+        "result": "failed",
+        "scope": "relevant",
+    }
     failed_jobs = fetch_json(client, f"{base_url}/api/v1/jobs", params=params).get("jobs", [])
+    scenario = _scenario(job)
+    others = [j for j in failed_jobs if str(j.get("id")) != str(job_id) and _scenario(j) != scenario]
     modules = {m.get("name", "unknown") for m in job.get("testresults", []) if m.get("result") == "failed"}
-    similar = sum(1 for j in failed_jobs if str(j.get("id")) != str(job_id) and _shares_failed_modules(j, modules))
-    return len(failed_jobs), similar if modules else 0
+    similar = sum(1 for j in others if _shares_failed_modules(j, modules))
+    own_scenario_failed = len(failed_jobs) > len(others) or job.get("result") == "failed"
+    return len(others) + int(own_scenario_failed), similar if modules else 0
 
 
 def _verdict_question(stats: dict[str, Any], opts: Options) -> str:
