@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import importlib.machinery
 import importlib.util
 import json
 import logging
 import pathlib
+import string
 import subprocess
 import sys
 import urllib.parse
@@ -809,6 +811,96 @@ def test_investigate_shows_a_structured_diff_as_indented_json(mocker: MockerFixt
 
 def test_investigation_text_is_redacted() -> None:
     assert "pw" not in llm_investigate._investigation_text("+ url http://u:pw@h/r")
+
+
+_COMMITS_OVERRIDES = {
+    "api/v1/jobs": {
+        "job": {
+            "result": "failed",
+            "testresults": [{"name": "isosize", "category": "installation", "result": "failed"}],
+            "settings": {"BUILD": "1.0"},
+        }
+    },
+    "investigation_ajax": {
+        "diff_to_last_good": '+   "BUILD" : "2",',
+        "test_log": "1111111 Other\n lib/x.pm | 1 +\n2222222 Fix isosize\n tests/installation/isosize.pm | 1 +\n",
+        "test_diff_stat": " lib/x.pm | 1 +\n tests/installation/isosize.pm | 1 +\n",
+    },
+}
+_COMMITS_SECTION = (
+    "Test commits since the last good job:\n"
+    "[failed module]: changes the failed module's test file;"
+    " [stack]: changes a file in the failing step's stack trace\n"
+    "[failed module] 2222222 Fix isosize\nand 1 other test commit\n\n"
+)
+
+
+def test_investigate_prompt_shows_test_commits_since_last_good(mocker: MockerFixture) -> None:
+    mocker.patch("llm_investigate.post_comment")
+    mocker.patch("llm_investigate.typer.echo")
+    mocker.patch("llm_investigate.analyze_job", return_value="the analysis")
+    baseline = setup_mock_client(mocker, {"api/v1/jobs": _COMMITS_OVERRIDES["api/v1/jobs"]})
+    llm_investigate.investigate("123")
+    client = setup_mock_client(mocker, _COMMITS_OVERRIDES)
+
+    llm_investigate.investigate("123")
+
+    assert f'+   "BUILD" : "2",\n\n{_COMMITS_SECTION}Failure analysis (' in _prompt_sent(client)
+    assert "Test commits since" not in _prompt_sent(baseline)
+    assert client.get.call_count == baseline.get.call_count
+    assert sum("investigation_ajax" in c.args[0] for c in client.get.call_args_list) == 1
+
+
+_LONG_ANALYSIS = "".join(f"line{i:05d}\n" for i in range(10000))
+
+
+def test_investigate_context_tokens_keep_small_test_commits_and_cut_the_analysis(mocker: MockerFixture) -> None:
+    mocker.patch("llm_investigate.post_comment")
+    mocker.patch("llm_investigate.typer.echo")
+    mocker.patch("llm_investigate.analyze_job", return_value=_LONG_ANALYSIS)
+    client = setup_mock_client(mocker, _COMMITS_OVERRIDES)
+
+    llm_investigate.investigate("123", log_lines=100000, context_tokens=4096)
+
+    prompt = _prompt_sent(client)
+    assert f"{_COMMITS_SECTION}Failure analysis (context window of 100 lines, truncated to fit 4096" in prompt
+    assert "--context-tokens budget reached" in prompt
+    assert len(prompt) <= (4096 - llm_investigate.RESPONSE_RESERVE_TOKENS) * llm_investigate.CHARS_PER_TOKEN
+
+
+def test_investigate_context_tokens_drop_large_test_commits_before_the_analysis(mocker: MockerFixture) -> None:
+    mocker.patch("llm_investigate.post_comment")
+    mocker.patch("llm_investigate.typer.echo")
+    mock_log = mocker.patch("llm_investigate.log")
+    mocker.patch("llm_investigate.analyze_job", return_value=_LONG_ANALYSIS)
+    log = "".join(f"{i:07x} Fix isosize {'x' * 60}\n tests/installation/isosize.pm | 1 +\n" for i in range(10))
+    investigation = _COMMITS_OVERRIDES["investigation_ajax"] | {"test_log": log}
+    client = setup_mock_client(mocker, _COMMITS_OVERRIDES | {"investigation_ajax": investigation})
+
+    llm_investigate.investigate("123", log_lines=100000, context_tokens=4096)
+
+    mock_log.info.assert_any_call("Test commits left out to fit --context-tokens=%d", 4096)
+    assert "Test commits since" not in _prompt_sent(client)
+    assert "--context-tokens budget reached" in _prompt_sent(client)
+
+
+def test_fit_context_drops_test_commits_only_when_the_analysis_needs_their_room() -> None:
+    names = {name for _, name, _, _ in string.Formatter().parse(llm_investigate.INTRO_TEMPLATE) if name}
+    commits = "Test commits since the last good job:\n" + "x" * 30 + "\n\n"
+    fields = dict.fromkeys(names, "") | {"commits_section": commits, "analysis": "a\n" * 2000}
+    opts = llm_investigate.Options("u", "m", None, 1, 100, 500, 100, 20, context_tokens=0)
+    note = llm_investigate.CONTEXT_TRUNCATED_NOTE.format(context_tokens=0)
+    overhead = len(llm_investigate.INTRO_TEMPLATE.format(**fields | {"analysis": "", "truncated": note}))
+    room = overhead + llm_investigate.OMISSION_NOTE_CHARS + len(commits) // 2
+    tokens = llm_investigate.RESPONSE_RESERVE_TOKENS + -(-room // llm_investigate.CHARS_PER_TOKEN)
+    assert len(commits) <= llm_investigate.COMMITS_MAX_SHARE * room
+
+    fitted = llm_investigate._fit_context(fields, dataclasses.replace(opts, context_tokens=tokens))
+    short = llm_investigate._fit_context(fields | {"analysis": "a\n"}, dataclasses.replace(opts, context_tokens=tokens))
+
+    assert not fitted["commits_section"]
+    assert "--context-tokens budget reached" in fitted["analysis"]
+    assert short["commits_section"] == commits
 
 
 @pytest.mark.parametrize(
