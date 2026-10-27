@@ -48,6 +48,7 @@ Job details:
 - Distri: {distri}
 - Version: {version}
 - Arch: {arch}
+- Machine: {machine}
 - Flavor: {flavor}
 - Result: {result}{prompt_extension_text}
 
@@ -67,7 +68,7 @@ Use backticks for commands, files and errors."""
 VERDICT_QUESTION = """Question 3: Judge the failure with these job statistics:
 - Total failed jobs in this build (across all tests): {build_failures}{hint}
 - Other jobs in this build failing in the exact same module(s): {same_module_failures}
-- Consecutive recent failures for this specific test (same name, arch, flavor): {consecutive_failures}
+- Consecutive recent failures for this specific test (same name, arch, flavor, machine, group): {consecutive_failures}
 
 Answer with exactly these three lines and nothing else.
 Classification: Product bug | Test issue | Infrastructure problem
@@ -303,6 +304,12 @@ def _shares_failed_modules(other_job: dict[str, Any], target_modules: set[str]) 
     return bool(target_modules.intersection(other_failed))
 
 
+def _scenario(job: dict[str, Any]) -> tuple[Any, ...]:
+    """Return the test, machine, flavor and arch of a job, which tell its scenario within a build."""
+    settings = job.get("settings", {})
+    return job.get("test"), settings.get("MACHINE"), settings.get("FLAVOR"), settings.get("ARCH")
+
+
 def _api_kind(opts: Options) -> LlmApi:
     """Resolve `auto`: Ollama's native chat endpoint ends in `/api/chat`, everything else is OpenAI style."""
     if opts.llm_api != LlmApi.AUTO:
@@ -490,12 +497,28 @@ def _enforce_bisect_rule(verdict: str, same_module_failures: int) -> str:
     return "\n".join(no if _BISECT_RE.match(ln) else ln for ln in verdict.splitlines())
 
 
+def _counted_run(job: dict[str, Any]) -> bool:
+    """Return whether a job of the test history takes part in the streak."""
+    return job.get("state") == "done" and job.get("result") in {"passed", "softfailed", "failed"}
+
+
+def _superseded(job: dict[str, Any], history: dict[int, dict[str, Any]], target: int) -> bool:
+    """Return whether the clone chain of a job reaches a counted run up to the target within the fetched history."""
+    current, clone_id = job["id"], job.get("clone_id")
+    # A clone always has a higher id, which also ends the walk on rows that loop
+    while clone_id in history and current < clone_id <= target:
+        if _counted_run(history[clone_id]):
+            return True
+        current, clone_id = clone_id, history[clone_id].get("clone_id")
+    return False
+
+
 def _consecutive_failures(
     client: httpx.Client, base_url: str, job_id: str, job: dict[str, Any], limit: int
 ) -> tuple[int, bool]:
-    """Count the failures in a row of the same test (name, arch, flavor) up to this job.
+    """Count the failures in a row of the same scenario (name, arch, flavor, machine, group) up to this job.
 
-    Returns the failure count and whether the target job was found in the recent history.
+    A restarted job counts once. Returns the failure count and whether the target job was found in the recent history.
     """
     settings = job.get("settings", {})
     params = {
@@ -504,28 +527,43 @@ def _consecutive_failures(
         "version": settings.get("VERSION", "unknown"),
         "arch": settings.get("ARCH", "unknown"),
         "flavor": settings.get("FLAVOR", "unknown"),
+        "groupid": job.get("group_id") or 0,
         "limit": limit,
     }
+    if settings.get("MACHINE"):
+        params["machine"] = settings["MACHINE"]
     test_jobs = fetch_json(client, f"{base_url}/api/v1/jobs", params=params).get("jobs", [])
     target = int(job_id)
     job_found = any(j["id"] == target for j in test_jobs)
     if not job_found:
         log.info("Job %s not found in recent history (limit %s). Streak count may be inaccurate.", job_id, limit)
-    relevant = sorted((j for j in test_jobs if j["id"] <= target), key=itemgetter("id"), reverse=True)
-    relevant = [
-        j for j in relevant if j.get("state") == "done" and j.get("result") in {"passed", "softfailed", "failed"}
-    ]
+    history = {j["id"]: j for j in test_jobs}
+    relevant = sorted(
+        (j for j in test_jobs if j["id"] <= target and _counted_run(j) and not _superseded(j, history, target)),
+        key=itemgetter("id"),
+        reverse=True,
+    )
     return next((i for i, j in enumerate(relevant) if j.get("result") != "failed"), len(relevant)), job_found
 
 
 def _build_failures(client: httpx.Client, base_url: str, job_id: str, job: dict[str, Any]) -> tuple[int, int]:
-    """Return the failed jobs of this build and those among them failing in the same module(s)."""
+    """Return the failed jobs of this build and the other ones failing in the same module(s).
+
+    A restarted job counts once, as openQA leaves out jobs whose clone is no longer pending (scope `relevant`), and
+    the investigated job's scenario counts once if the job or a run of its scenario failed.
+    """
     settings = job.get("settings", {})
-    params = {k.lower(): settings.get(k, "unknown") for k in ("BUILD", "DISTRI", "VERSION")} | {"result": "failed"}
+    params = {k.lower(): settings.get(k, "unknown") for k in ("BUILD", "DISTRI", "VERSION")} | {
+        "result": "failed",
+        "scope": "relevant",
+    }
     failed_jobs = fetch_json(client, f"{base_url}/api/v1/jobs", params=params).get("jobs", [])
+    scenario = _scenario(job)
+    others = [j for j in failed_jobs if str(j.get("id")) != str(job_id) and _scenario(j) != scenario]
     modules = {m.get("name", "unknown") for m in job.get("testresults", []) if m.get("result") == "failed"}
-    similar = sum(1 for j in failed_jobs if str(j.get("id")) != str(job_id) and _shares_failed_modules(j, modules))
-    return len(failed_jobs), similar if modules else 0
+    similar = sum(1 for j in others if _shares_failed_modules(j, modules))
+    own_scenario_failed = len(failed_jobs) > len(others) or job.get("result") == "failed"
+    return len(others) + int(own_scenario_failed), similar if modules else 0
 
 
 def _verdict_question(stats: dict[str, Any], opts: Options) -> str:
@@ -583,6 +621,7 @@ def _build_prompt(job: dict[str, Any], analysis: str, stats: dict[str, Any], opt
         "distri": settings.get("DISTRI", "unknown"),
         "version": settings.get("VERSION", "unknown"),
         "arch": settings.get("ARCH", "unknown"),
+        "machine": settings.get("MACHINE", "unknown"),
         "flavor": settings.get("FLAVOR", "unknown"),
         "result": job.get("result", "unknown"),
         "context_lines": opts.context_lines,

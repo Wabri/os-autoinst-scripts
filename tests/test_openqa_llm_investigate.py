@@ -1209,6 +1209,13 @@ def _prompt(extension: Any) -> str:
     )
 
 
+def test_build_prompt_names_the_machine() -> None:
+    job = {"settings": {"ARCH": "x86_64", "MACHINE": "uefi", "FLAVOR": "DVD"}}
+    opts = llm_investigate.Options("http://llm", "m", None, 1, 50, 100, 10, 5)
+    prompt = llm_investigate._build_prompt(job, "analysis", {"investigation_info": ""}, opts)
+    assert "- Arch: x86_64\n- Machine: uefi\n- Flavor: DVD\n" in prompt
+
+
 def test_build_prompt_additional_instructions_after_job_details() -> None:
     prompt = _prompt("Ignore known flaky x11 tests.")
     assert "Additional instructions for this test:\nIgnore known flaky x11 tests." in prompt
@@ -1260,6 +1267,174 @@ def test_consecutive_failures_not_found(caplog: pytest.LogCaptureFixture) -> Non
     assert "Job 12 not found in recent history (limit 10). Streak count may be inaccurate." in caplog.text
 
 
+@pytest.mark.parametrize(
+    ("group_id", "machine", "extra_params"),
+    [
+        (7, "uefi", {"machine": "uefi", "groupid": 7}),
+        (None, "uefi", {"machine": "uefi", "groupid": 0}),
+        (7, None, {"groupid": 7}),
+    ],
+    ids=["in-group", "without-group", "without-machine"],
+)
+def test_consecutive_failures_queries_one_scenario(
+    group_id: int | None, machine: str | None, extra_params: dict[str, Any]
+) -> None:
+    # Runs on other machines or in other groups, such as verification clones, must not touch the streak
+    mock_client = MagicMock()
+    mock_client.get.return_value.json.return_value = {"jobs": []}
+    settings = {"DISTRI": "opensuse", "VERSION": "Tumbleweed", "ARCH": "x86_64", "FLAVOR": "DVD", "MACHINE": machine}
+    job = {"test": "t", "group_id": group_id, "settings": settings}
+    llm_investigate._consecutive_failures(mock_client, "http://example.com", "12", job, limit=10)
+    scenario = {"test": "t", "distri": "opensuse", "version": "Tumbleweed", "arch": "x86_64", "flavor": "DVD"}
+    assert mock_client.get.call_args.kwargs["params"] == scenario | {"limit": 10} | extra_params
+
+
+def _run(job_id: int, result: str, clone_id: int | None = None, state: str = "done") -> dict[str, Any]:
+    return {"id": job_id, "state": state, "result": result, "clone_id": clone_id}
+
+
+@pytest.mark.parametrize(
+    ("jobs", "job_id", "expected"),
+    [
+        ([_run(10, "passed"), _run(11, "failed", 12), _run(12, "failed"), _run(13, "failed", 14)], "13", 2),
+        ([_run(89, "passed"), _run(90, "failed", 110), _run(91, "failed"), _run(110, "failed")], "91", 2),
+        (
+            [
+                _run(10, "passed"),
+                _run(11, "failed", 12),
+                _run(12, "incomplete", 13),
+                _run(13, "failed"),
+                _run(14, "failed"),
+            ],
+            "14",
+            2,
+        ),
+        (
+            [_run(10, "passed"), _run(11, "failed", 12), _run(12, "obsoleted", state="cancelled"), _run(13, "failed")],
+            "13",
+            2,
+        ),
+        (
+            [_run(10, "failed"), _run(11, "passed", 12), _run(12, "skipped", state="cancelled"), _run(13, "failed")],
+            "13",
+            1,
+        ),
+        ([_run(10, "passed"), _run(11, "failed", 12), _run(12, "parallel_failed"), _run(13, "failed")], "13", 2),
+        ([_run(10, "passed"), _run(11, "failed", 12), _run(13, "failed")], "13", 2),
+    ],
+    ids=[
+        "clone-counted",
+        "clone-after-job",
+        "chain-of-restarts",
+        "clone-obsoleted",
+        "clone-skipped",
+        "clone-parallel-failed",
+        "clone-not-fetched",
+    ],
+)
+def test_consecutive_failures_counts_restarted_jobs_once(
+    jobs: list[dict[str, Any]], job_id: str, expected: int
+) -> None:
+    mock_client = MagicMock()
+    mock_client.get.return_value.json.return_value = {"jobs": jobs}
+    count, found = llm_investigate._consecutive_failures(
+        mock_client, "http://example.com", job_id, {"test": "t", "settings": {}}, limit=10
+    )
+    assert (count, found) == (expected, True)
+
+
+def test_superseded_ends_on_rows_whose_clones_loop() -> None:
+    history = {
+        10: {"id": 10, "state": "done", "result": "incomplete", "clone_id": 11},
+        11: {"id": 11, "state": "done", "result": "incomplete", "clone_id": 10},
+    }
+    assert not llm_investigate._superseded(history[10], history, 20)
+
+
+PENDING_STATES = {"scheduled", "assigned", "setup", "running", "uploading"}
+
+
+def _build_jobs_client(jobs: list[dict[str, Any]]) -> MagicMock:
+    # Like openQA, scope=relevant keeps a job only if it has no clone or a pending one
+    states = {j["id"]: j["state"] for j in jobs}
+
+    def get(_url: str, params: dict[str, Any], **_kwargs: Any) -> Mock:
+        rows = [
+            j
+            for j in jobs
+            if j["result"] == params["result"]
+            and (
+                params.get("scope") != "relevant"
+                or j.get("clone_id") is None
+                or states[j["clone_id"]] in PENDING_STATES
+            )
+        ]
+        return Mock(json=Mock(return_value={"jobs": rows}))
+
+    client = MagicMock()
+    client.get.side_effect = get
+    return client
+
+
+def _failed_job(
+    job_id: int, test: str, clone_id: int | None = None, group_id: int | None = 1, machine: str = "uefi"
+) -> dict[str, Any]:
+    return {
+        "id": job_id,
+        "test": test,
+        "group_id": group_id,
+        "state": "done",
+        "result": "failed",
+        "clone_id": clone_id,
+        "settings": {"MACHINE": machine, "FLAVOR": "DVD", "ARCH": "x86_64"},
+        "modules": [{"name": "isosize", "result": "failed"}],
+    }
+
+
+def _count_build_failures(jobs: list[dict[str, Any]]) -> tuple[int, int]:
+    job = jobs[0] | {"testresults": jobs[0]["modules"]}
+    return llm_investigate._build_failures(_build_jobs_client(jobs), "http://example.com", str(job["id"]), job)
+
+
+def test_build_failures_counts_a_job_restarted_into_a_pending_clone() -> None:
+    pending = {"id": 130, "state": "scheduled", "result": "none"}
+    total, same = _count_build_failures([_failed_job(123, "t"), _failed_job(124, "u", clone_id=130), pending])
+    assert (total, same) == (2, 1)
+    assert llm_investigate._enforce_bisect_rule("BISECT: YES \u2014 isolated", same).startswith("BISECT: NO")
+
+
+def test_build_failures_counts_retried_failures_with_running_clones() -> None:
+    jobs = [_failed_job(i, f"t{i}", clone_id=i + 100) for i in range(1, 26)]
+    jobs += [{"id": i + 100, "state": "running", "result": "none"} for i in range(1, 26)]
+    assert _count_build_failures(jobs) == (25, 24)
+
+
+def test_build_failures_counts_only_the_finished_clone_of_a_restarted_job() -> None:
+    jobs = [_failed_job(123, "t"), _failed_job(124, "u", clone_id=130), _failed_job(130, "u")]
+    assert _count_build_failures(jobs) == (2, 1)
+
+
+def test_build_failures_counts_the_finished_retry_of_the_job_as_the_job() -> None:
+    jobs = [_failed_job(123, "t", clone_id=124), _failed_job(124, "t"), _failed_job(125, "t", machine="64bit")]
+    assert _count_build_failures(jobs) == (2, 1)
+
+
+def test_build_failures_does_not_count_an_incomplete_investigated_job() -> None:
+    jobs = [_failed_job(123, "t") | {"result": "incomplete"}, _failed_job(124, "u")]
+    assert _count_build_failures(jobs) == (1, 1)
+
+
+def test_build_failures_counts_the_failed_job_whose_retry_passed() -> None:
+    passed = {"id": 130, "state": "done", "result": "passed"}
+    jobs = [_failed_job(123, "t", clone_id=130), passed, _failed_job(124, "u")]
+    assert _count_build_failures(jobs) == (2, 1)
+
+
+def test_build_failures_leaves_out_a_group_less_clone_of_the_job() -> None:
+    jobs = [_failed_job(123, "t"), _failed_job(140, "t", group_id=None), _failed_job(125, "t", machine="64bit")]
+    assert _count_build_failures(jobs) == (2, 1)
+
+
 def test_investigate_job_not_found_in_history_appends_note_and_logs_info(mocker: MockerFixture) -> None:
     mock_log = mocker.patch("llm_investigate.log")
     mock_post = mocker.patch("llm_investigate.post_comment")
@@ -1303,7 +1478,7 @@ def test_investigate_job_not_found_in_history_informs_llm_prompt(mocker: MockerF
     llm_investigate.investigate("123", history_limit=20, print_prompt=True)
     output = mock_print.call_args[0][0]
     assert (
-        "- Consecutive recent failures for this specific test (same name, arch, flavor): 2 "
+        "- Consecutive recent failures for this specific test (same name, arch, flavor, machine, group): 2 "
         "(streak count may be inaccurate: job not found in recent history, limit 20)"
     ) in output
 
