@@ -139,7 +139,7 @@ ignore = [
 max-complexity = 9
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["magic-value-comparison", "any-type", "too-many-arguments", "assert", "hardcoded-password-string", "hardcoded-password-func-arg", "too-many-positional-arguments", "undocumented-public-function", "private-member-access"]
+"tests/*" = ["magic-value-comparison", "any-type", "too-many-arguments", "assert", "hardcoded-password-string", "hardcoded-password-func-arg", "too-many-positional-arguments", "undocumented-public-function", "private-member-access", "shared-clock-mock"]
 
 [tool.ruff.format]
 # Enable reformatting of code snippets in docstrings.
