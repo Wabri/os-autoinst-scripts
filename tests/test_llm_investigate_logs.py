@@ -278,6 +278,106 @@ def test_key_error_no_match_is_none() -> None:
     assert logs.summarize_key_error("all fine\n") is None
 
 
+_UNANSWERED_SUDO = (
+    "# Command: sudo zypper -n in vim\n# wait_serial expected: qr/Ab1-\\d+-/\n# Result:\n"
+    "sudo zypper -n in vim; echo Ab1-$?-\n[sudo] password for bernhard: \n"
+)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (_UNANSWERED_SUDO, "command waited for a sudo password"),
+        ("# Result:\nsudo -i\n[sudo: authenticate] Password: \n", "command waited for a sudo password"),
+        ("curl: (6) Could not resolve host: download.opensuse.org\n", "name resolution failed (download.opensuse.org)"),
+        (
+            "ssh: Could not resolve hostname server-node00: Name or service not known",
+            "name resolution failed (server-node00)",
+        ),
+        ("Could not resolve host name mirror.example.org", "name resolution failed (mirror.example.org)"),
+        (
+            (
+                'Error: Get "https://registry.example.org/v2/": dial tcp: lookup registry.example.org on 10.0.2.3:53: '
+                "no such host"
+            ),
+            "name resolution failed (registry.example.org)",
+        ),
+        ("dial tcp: lookup quay.io: no such host", "name resolution failed (quay.io)"),
+        ("ping: example.com: Temporary failure in name resolution", "name resolution failed"),
+        (
+            "mount.nfs: an incorrect mount option was specified for /mnt",
+            "mount failed (mount.nfs: an incorrect mount option was specified)",
+        ),
+        ("# Result:\n\rmount.nfs4: Connection timed out\n\r", "mount failed (mount.nfs4: Connection timed out)"),
+        (
+            "mount: /opt/scratch: wrong fs type, bad option, bad superblock on /dev/loop1, missing codepage or helper",
+            "mount failed (wrong fs type, bad option, bad superblock)",
+        ),
+        (
+            "mount: /mnt: fsconfig system call failed: btrfs: Unknown parameter 'foo'.",
+            "mount failed (fsconfig system call failed: btrfs: Unknown parameter 'foo'.)",
+        ),
+    ],
+)
+def test_failing_step_rule(text: str, expected: str) -> None:
+    assert logs.summarize_key_error("", ["# Test died: boom", text]) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "# Result:\nsudo id -un\n[sudo] password for bernhard: \nroot\n\n# Exit code: 0\n",
+        "# Result:\nsudo -k true\n[sudo] password for bernhard: \n\n# Exit code: 1\n",
+        "[  253.247214] Key type dns_resolver registered\nsystemd-resolved.service: Deactivated successfully.\n",
+        "mount.nfs: timeout set for Sat Oct 25 05:41:04 2026\n",
+        "curl: (6) Could not resolve host address 'mirror.example.org'\n",
+        "Could not resolve host Could not resolve host\n",
+        "mount: /mnt: WARNING: source write-protected, mounted read-only.\n",
+        "[  OK  ] Unmounted /home.\n# mount -t nfs server:/export /mnt\n",
+    ],
+)
+def test_failing_step_rules_skip_near_misses(text: str) -> None:
+    assert logs.summarize_key_error("", [text]) is None
+
+
+@pytest.mark.parametrize(
+    ("texts", "expected"),
+    [
+        (["Could not resolve host: example.com", _UNANSWERED_SUDO], "command waited for a sudo password"),
+        (
+            ["mount.nfs: access denied by server while mounting s:/x", "Name or service not known"],
+            "name resolution failed",
+        ),
+    ],
+)
+def test_failing_step_rule_order(texts: list[str], expected: str) -> None:
+    assert logs.summarize_key_error("", texts) == expected
+
+
+def test_failing_step_rules_on_a_line_of_repeated_prompts() -> None:
+    assert logs.summarize_key_error("", ["[sudo] password for " * (256 * 1024 // 20)]) is None
+
+
+_STALE_AVC = 'audit: type=1400 avc:  denied  { read } for  pid=412 comm="plymouthd" name="fb0"'
+_DNS = ["curl: (6) Could not resolve host: download.opensuse.org"]
+
+
+@pytest.mark.parametrize(
+    ("signals", "failing", "expected"),
+    [
+        (_STALE_AVC, _DNS, "name resolution failed (download.opensuse.org)"),
+        ("cloud-init[1]: util.py[ERROR]: boom", _DNS, "name resolution failed (download.opensuse.org)"),
+        ("x\nDIALOG: Warning", _DNS, "name resolution failed (download.opensuse.org)"),
+        ("Permission to access 'https://updates.suse.com/x' denied.", _DNS, "repo auth failed (updates.suse.com)"),
+        (f"{_STALE_AVC}\nYou are in emergency mode.", _DNS, "boot reached emergency mode"),
+        (f"{_STALE_AVC}\nYou are in emergency mode.", [], "SELinux denial"),
+        (f"{_STALE_AVC}\nYou are in emergency mode.", ["all fine"], "SELinux denial"),
+    ],
+)
+def test_failing_step_verdict_beats_only_generic_key_errors(signals: str, failing: list[str], expected: str) -> None:
+    assert logs.summarize_key_error(signals, failing) == expected
+
+
 def test_kdump_oops_symbol() -> None:
     assert logs.kdump_oops_symbol(_KDUMP) == "vmbus_chan_sched"
     assert logs.kdump_oops_symbol("Kernel panic - not syncing\n") is None

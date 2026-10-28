@@ -481,6 +481,155 @@ def test_kernel_panic_and_key_error(make_openqa: Any, sample_details_failed: Any
     assert out.index("Key error:") < out.index("Found 3 failed module(s)") < out.index("FATAL BOOT ERROR DETECTED")
 
 
+def _died(command: str, how: str = "failed", num: int = 9) -> dict[str, Any]:
+    return _step(num, title="Failed", text=f"# Test died: command '{command}' {how} at tests/x.pm line 3.\n")
+
+
+def _run(num: int, command: str, output: str, code: int) -> dict[str, Any]:
+    return _step(
+        num, "ok", text=f"# Command: {command}\n# Result:\n{command[:19]}\u2026\n\n{output}\n\n# Exit code: {code}\n"
+    )
+
+
+_CURL = "curl -sf http://download.example.org/x"
+_CURL_DNS = "curl: (6) Could not resolve host: download.example.org"
+_CURL_404 = "curl: (22) The requested URL returned error: 404"
+_POST_FAIL = _step(10, "unk", title="Post-fail", text="Entering post fail hook")
+_ZYPPER_REF = "zypper -n ref | cat; ( exit ${PIPESTATUS[0]} )"
+_ZYPPER_DNS = "Download (curl) error: Could not resolve host: download.opensuse.org"
+_REPO_INVALID = "Repository 'OSS' is invalid."
+_SERIAL_RUNS = f"# {_CURL}; echo Ab1-$?-\n{_CURL_404}\nAb1-22-\n# {_CURL}; echo Cd2-$?-\n{_CURL_DNS}\nCd2-6-\n"
+_PING = "ping: server-node01: Name or service not known"
+
+
+def test_sudo_prompt_ending_the_failing_step_is_the_key_error(make_openqa: Any) -> None:
+    waited = "# wait_serial expected: qr/Ab1-\\d+-/\n# Result:\nsudo zypper -n in vim\n[sudo] password for x: \n"
+    out = _module_report(make_openqa, [_step(8, text=waited), _died("sudo zypper -n in vim", "timed out")])
+    assert "Key error: command waited for a sudo password" in out
+
+
+@pytest.mark.parametrize(
+    ("files", "steps", "expected"),
+    [
+        ({}, [_run(8, _CURL, _CURL_DNS, 6)], "name resolution failed (download.example.org)"),
+        (
+            {},
+            [_run(8, f"{_CURL}; echo SCRIPT_FINISHEDab1-$?-", _CURL_DNS, 6)],
+            "name resolution failed (download.example.org)",
+        ),
+        (
+            {"serial0.txt": 'audit: avc:  denied  { read } for  pid=412 comm="plymouthd"\n'},
+            [_run(8, _CURL, _CURL_DNS, 6)],
+            "name resolution failed (download.example.org)",
+        ),
+        (
+            {},
+            [
+                _run(7, "zypper -n in vim", "Permission to access 'https://updates.suse.com/x' denied.", 4),
+                _run(8, _CURL, _CURL_DNS, 6),
+            ],
+            "repo auth failed (updates.suse.com)",
+        ),
+    ],
+    ids=["died command run", "command with echo suffix", "stale AVC denial", "repo auth"],
+)
+def test_failing_step_key_error(
+    make_openqa: Any, files: dict[str, str], steps: list[dict[str, Any]], expected: str
+) -> None:
+    assert f"Key error: {expected}\n" in _module_report(make_openqa, [*steps, _died(_CURL)], files)
+
+
+@pytest.mark.parametrize(
+    ("first", "last", "key_errors"),
+    [
+        (_REPO_INVALID, _ZYPPER_DNS, ["Key error: name resolution failed (download.opensuse.org)"]),
+        (_ZYPPER_DNS, _REPO_INVALID, []),
+    ],
+    ids=["last retry", "earlier retry"],
+)
+def test_failing_step_rules_read_the_last_retry_of_the_died_command(
+    make_openqa: Any, first: str, last: str, key_errors: list[str]
+) -> None:
+    grep = 'grep "Error code.*502" /var/log/zypper.log'
+    steps = [
+        _run(1, _ZYPPER_REF, first, 4),
+        _run(2, grep, "", 1),
+        _run(4, _ZYPPER_REF, last, 4),
+        _run(5, grep, "", 1),
+        _step(8, title="Failed", text="# Test died: 'zypper -n ref' failed with code 4\n\nRelated zypper logs:\n"),
+    ]
+    out = _module_report(make_openqa, steps)
+    assert [ln for ln in out.splitlines() if ln.startswith("Key error:")] == key_errors
+
+
+@pytest.mark.parametrize(
+    ("steps", "files", "category"),
+    [
+        (
+            [
+                _step(
+                    8, text="# wait_serial expected: qr/^root$/m\n# Result:\nsudo id -un\n[sudo] password for x: \nx\n"
+                ),
+                _step(9, title="Failed", text="# Test died: output not validating\n"),
+            ],
+            {},
+            "c",
+        ),
+        ([_run(6, _CURL, _CURL_DNS, 6), _run(7, _CURL, "", 0), _died("grep -q foo /etc/bar")], {}, "c"),
+        (
+            [
+                _run(
+                    8,
+                    "mount -o bogus /dev/vdb /mnt",
+                    "mount: /mnt: wrong fs type, bad option, bad superblock on /dev/vdb",
+                    32,
+                ),
+                _died("false"),
+            ],
+            {},
+            "c",
+        ),
+        (
+            [_run(8, _CURL, _CURL_404, 22), _died(_CURL), _POST_FAIL, _run(11, _CURL, _CURL_DNS, 6)],
+            {"serial_terminal.txt": _SERIAL_RUNS},
+            "c",
+        ),
+        (
+            [
+                _run(8, "ping -c1 server-node01", _PING, 2),
+                _died("ping -c1 server"),
+            ],
+            {"serial_terminal.txt": f"# ping -c1 server-node01; echo Ab1-$?-\n{_PING}\nAb1-2-\n"},
+            "c",
+        ),
+        ([_run(8, "info", _CURL_DNS, 6), _died("query 'SELECT * FROM info()'")], {}, "c"),
+        ([_run(8, _CURL, _CURL_DNS, 6), _died(_CURL)], {}, "publiccloud"),
+        (
+            [
+                _run(8, _CURL, _CURL_DNS, 6),
+                _step(9, title="Failed", text="# Test died: no candidate needle with tag(s) 'ok' matched\n"),
+            ],
+            {"autoinst-log.txt": "x no candidate needle with tag(s) 'ok' matched\n"},
+            "c",
+        ),
+    ],
+    ids=[
+        "answered sudo prompt",
+        "passed name resolution retry",
+        "mount probe",
+        "post-fail rerun",
+        "longer command",
+        "short parsed command",
+        "publiccloud",
+        "needle",
+    ],
+)
+def test_failing_step_rules_skip_other_steps_and_runs(
+    make_openqa: Any, steps: list[dict[str, Any]], files: dict[str, str], category: str
+) -> None:
+    assert "Key error:" not in _module_report(make_openqa, steps, files, category=category)
+
+
 def test_uploaded_widgets_and_terraform_output(make_openqa: Any) -> None:
     routes = {
         "/tests/42/details_ajax": json.dumps({"modules": [_module([_step(1, text="boom")], category="c")]}),

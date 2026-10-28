@@ -85,6 +85,7 @@ _RETRIES_SHOWN = 5
 _PUBLICCLOUD_CONTEXT_AFTER = 5
 _LOGIN_PROMPT_TAIL_LINES = 10
 _MODULES_MAX = 3
+_MIN_COMMAND_CHARS = 5
 _NEEDLE_RE = re.compile(r"no candidate needle with tag\(s\) '[^']+'")
 _LOGIN_PROMPT_RE = re.compile(r"login:\s*$")
 STACK_TRACE = "Stack trace"
@@ -415,6 +416,51 @@ def _key_error_signals(
     return signals
 
 
+def _typed_command_re(command: str) -> re.Pattern[str]:
+    """Match the command of a step that typed `command`, also as script_retry and zypper_call wrap it."""
+    return re.compile(
+        rf"(?:timeout -k \d+ (?:\S+ )?\d+ )?{re.escape(command)}"
+        r"(?: ?\| (?:cat|tee \S+))?(?: ?; \( exit \$\{PIPESTATUS\[0\]\} \))?"
+    )
+
+
+def _ran_command(step: JsonDict, typed: re.Pattern[str]) -> bool:
+    """Return whether a step is the `# Command:` step of a typed command, with or without its `; echo` suffix."""
+    text = step.get("text_data") or ""
+    return text.startswith("# Command:") and bool(typed.fullmatch(parse_command_from_text_data(text) or ""))
+
+
+def _died_command_run(
+    job: _Job, details: list[JsonDict], cluster: list[JsonDict], category: str | None
+) -> JsonDict | None:
+    """Return the last step before the died one that ran its command, if `_died_step` shows that command's output.
+
+    That step holds the output of the run that failed; the serial log can hold a later run or a longer command too.
+    """
+    died = next((d for d in reversed(cluster) if TEST_DIED in (d.get("text_data") or "")), None)
+    if died is None or category == "publiccloud" or (_NEEDLE_RE.search(died["text_data"]) and job.autoinst):
+        return None
+    command = parse_command_from_test_died(died["text_data"]) or ""
+    if len(command) < _MIN_COMMAND_CHARS:
+        return None
+    typed, num = _typed_command_re(command), died.get("num", 0)
+    return next((d for d in reversed(details) if d.get("num", 0) < num and _ran_command(d, typed)), None)
+
+
+def _failing_step_texts(job: _Job, modules: list[JsonDict]) -> list[str]:
+    """Return the texts of the steps that failed each module and of the step that ran its died command."""
+    texts: list[str] = []
+    for module in modules:
+        details = module.get("details", [])
+        if not (failing := failing_cluster(details)):
+            continue
+        cluster = failing[0]
+        run = _died_command_run(job, details, cluster, module.get("category"))
+        steps = [*cluster, run] if run and not any(d is run for d in cluster) else cluster
+        texts += [f"{d.get('display_title', '')}\n{d.get('text_data') or ''}" for d in steps]
+    return texts
+
+
 def _preamble(
     oqa: OpenQA, job_id: str, job: _Job, failed_modules: list[JsonDict], *, include_softfailed: bool
 ) -> tuple[list[str], dict[str, dict[str, list[str]]], bool]:
@@ -429,9 +475,9 @@ def _preamble(
         for m in failed_modules[:_MODULES_MAX]
     }
     out: list[str] = []
-    if key_error := summarize_key_error(
-        "\n".join(_key_error_signals(failed_modules, boot_log, [consoles, job_files], uploads))
-    ):
+    signals = "\n".join(_key_error_signals(failed_modules, boot_log, [consoles, job_files], uploads))
+    failing = _failing_step_texts(job, failed_modules[:_MODULES_MAX])
+    if key_error := summarize_key_error(signals, failing):
         out += [redact(f"Key error: {key_error}"), ""]
     if (died := last_test_died(job.autoinst)) and died[1] > 1:
         out += [redact(f"Last test died ({died[1]} in autoinst-log.txt): {died[0]}"), ""]
