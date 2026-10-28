@@ -87,6 +87,9 @@ _LOGIN_PROMPT_TAIL_LINES = 10
 _MODULES_MAX = 3
 _NEEDLE_RE = re.compile(r"no candidate needle with tag\(s\) '[^']+'")
 _LOGIN_PROMPT_RE = re.compile(r"login:\s*$")
+STACK_TRACE = "Stack trace"
+SECTION_END = "--- End of Log Section ---"
+TEST_DIED = "# Test died:"
 
 
 @dataclass
@@ -99,8 +102,13 @@ class _Job:
     booted_to_login: bool = False
 
 
+def section_start(title: str) -> str:
+    """Return the line that opens the analysis section `title`."""
+    return f"--- {title} ---"
+
+
 def _section(title: str, body: list[str]) -> list[str]:
-    return [f"--- {title} ---", *body, "--- End of Log Section ---", ""]
+    return [section_start(title), *body, SECTION_END, ""]
 
 
 def _masked(lines: list[str]) -> list[str]:
@@ -165,7 +173,7 @@ def _died_step(job: _Job, detail: JsonDict, category: str | None) -> tuple[list[
     """Return the died step's message (plus its command's output) and the sections that follow the step context."""
     text_data = detail.get("text_data") or ""
     body, trace = split_died_text(text_data)
-    sections = _section("Stack trace", _masked(trace)) if trace else []
+    sections = _section(STACK_TRACE, _masked(trace)) if trace else []
     if category == "publiccloud":
         return body, sections + _publiccloud_context(job)
     needle = _NEEDLE_RE.search(text_data)
@@ -198,15 +206,15 @@ def _other_step(job: _Job, detail: JsonDict, cluster: list[JsonDict]) -> tuple[l
     text_data = detail.get("text_data") or ""
     if text_data:
         body, trace = split_died_text(text_data)
-        return body, _section("Stack trace", _masked(trace)) if trace else []
-    bare_screen = detail.get("screenshot") and any("# Test died:" in (d.get("text_data") or "") for d in cluster)
+        return body, _section(STACK_TRACE, _masked(trace)) if trace else []
+    bare_screen = detail.get("screenshot") and any(TEST_DIED in (d.get("text_data") or "") for d in cluster)
     return ([], []) if bare_screen else ([], _serial_tail(job))
 
 
 def _step_bodies(job: _Job, cluster: list[JsonDict], category: str | None) -> tuple[dict[int, list[str]], list[str]]:
     """Return the text shown under the failing and the died step in the step context, and the sections after it."""
     failing = failing_step(cluster)
-    died = next((d for d in reversed(cluster) if "# Test died:" in (d.get("text_data") or "")), None)
+    died = next((d for d in reversed(cluster) if TEST_DIED in (d.get("text_data") or "")), None)
     bodies: dict[int, list[str]] = {}
     sections: list[str] = []
     for step in (d for d in cluster if d is failing or d is died):
